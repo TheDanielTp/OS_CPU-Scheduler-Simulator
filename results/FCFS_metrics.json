@@ -1,0 +1,15 @@
+{
+  "total_processes": 50,
+  "total_time": 2404,
+  "avg_turnaround": 672.28,
+  "std_turnaround": 515.5634990958921,
+  "avg_waiting": 613.42,
+  "std_waiting": 506.57532865310367,
+  "avg_response": 613.42,
+  "cpu_utilization": 93.96838602329451,
+  "throughput": 0.020798668885191347,
+  "fairness": 0.15992143588699054,
+  "avg_slowdown": 36.132368335917064,
+  "algorithm": "FCFS",
+  "num_cpus": 1
+}

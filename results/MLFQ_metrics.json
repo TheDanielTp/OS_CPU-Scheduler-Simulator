@@ -1,0 +1,18 @@
+{
+  "total_processes": 1,
+  "total_time": 99973,
+  "avg_turnaround": 99953.0,
+  "std_turnaround": 0,
+  "avg_waiting": 99914.0,
+  "std_waiting": 0,
+  "avg_response": 2.0,
+  "cpu_utilization": 0.0010002700729196882,
+  "throughput": 1.0002700729196883e-05,
+  "fairness": 1.0,
+  "avg_slowdown": 2562.897435897436,
+  "algorithm": "MLFQ",
+  "num_cpus": 1,
+  "mlfq_level_distribution": {
+    "0": 1
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "total_processes": 50,
+  "total_time": 2483,
+  "avg_turnaround": 309.54,
+  "std_turnaround": 466.48276323997226,
+  "avg_waiting": 250.68,
+  "std_waiting": 415.7697170309545,
+  "avg_response": 239.14,
+  "cpu_utilization": 90.9786548530004,
+  "throughput": 0.02013693113169553,
+  "fairness": 0.3762244592133773,
+  "avg_slowdown": 4.018679371056224,
+  "algorithm": "SRTF",
+  "num_cpus": 1
+}

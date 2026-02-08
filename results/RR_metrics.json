@@ -1,0 +1,15 @@
+{
+  "total_processes": 16,
+  "total_time": 1027,
+  "avg_turnaround": 205.1875,
+  "std_turnaround": 124.83199647426136,
+  "avg_waiting": 178.1875,
+  "std_waiting": 126.75479219244534,
+  "avg_response": 106.0625,
+  "cpu_utilization": 26.679649464459594,
+  "throughput": 0.01557935735150925,
+  "fairness": 0.40218696585814384,
+  "avg_slowdown": 25.26329647322316,
+  "algorithm": "RR",
+  "num_cpus": 1
+}

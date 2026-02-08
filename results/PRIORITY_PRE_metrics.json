@@ -1,0 +1,16 @@
+{
+  "total_processes": 50,
+  "total_time": 2204,
+  "avg_turnaround": 601.98,
+  "std_turnaround": 417.15246565254773,
+  "avg_waiting": 543.12,
+  "std_waiting": 417.4332349011037,
+  "avg_response": 536.48,
+  "cpu_utilization": 102.49546279491832,
+  "throughput": 0.022686025408348458,
+  "fairness": 0.1770631279345443,
+  "avg_slowdown": 39.042522328431396,
+  "algorithm": "PRIORITY_PRE",
+  "num_cpus": 1,
+  "priority_inversion_risk": -240.10795454545456
+}

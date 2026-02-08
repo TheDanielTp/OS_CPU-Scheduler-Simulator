@@ -64,9 +64,12 @@ class Process:
     
     def _calculate_weight(self, priority: int) -> float:
         """Calculate CFS weight from priority."""
-        # Map priority 1-10 to nice values -5 to +4
-        nice = max(-5, min(4, priority - 6))
-        return 1024 * (1.25 ** (-nice))
+        # Map priority 1-10 to nice values -20 to +19
+        # priority 1 = highest = nice -20
+        # priority 10 = lowest = nice +19
+        nice = priority - 1 - 20  # Map 1-10 to -20 to +19
+        # Weight formula: weight = 1024 / (1.25 ** nice)
+        return 1024 / (1.25 ** nice)
     
     @property
     def waiting_time(self) -> int:
@@ -120,7 +123,3 @@ class Process:
         return (f"Process(pid={self.pid}, arrival={self.arrival_time}, "
                 f"cpu={self.cpu_burst}, io={self.io_burst}, "
                 f"priority={self.original_priority}, state={self.state.name})")
-    
-    def __lt__(self, other) -> bool:
-        """Default comparison for priority queues."""
-        return self.pid < other.pid

@@ -25,9 +25,9 @@ class Simulator:
         self.current_processes = [None] * num_cpus
         self.cpu_assignments = {}  # pid -> cpu_id
         self.current_start = [0] * num_cpus
+        self.context_switch_cost = context_switch
         
         # Algorithm parameters
-        self.context_switch = context_switch
         self.quantum = quantum
         self.age_interval = age_interval
         self.tick_interval = tick_interval
@@ -35,9 +35,15 @@ class Simulator:
         # MLFQ configuration
         if self.algorithm == 'MLFQ':
             self.num_levels = 3
-            self.quanta = [8, 16, 0]  # last level FCFS
+            self.quanta = [8, 16, 0]  # last level FCFS (0 = infinite quantum)
             self.boost_interval = 200  # Priority boost interval
+            self.time_slice_used = {}  # Track time used by each process in current quantum
         
+        # CFS configuration
+        if self.algorithm == 'CFS':
+            self.min_granularity = 6  # Minimum scheduling granularity
+            self.latency_target = 48  # Target latency
+            
         # Results
         self.gantt = []  # List of (start, end, pid, cpu_id)
         self.completed = []
@@ -50,7 +56,8 @@ class Simulator:
         # Optimization flags
         self.use_heap = self.algorithm in ['CFS', 'EDF']
         self.needs_aging = 'PRIORITY' in self.algorithm
-        self.needs_tick = self.algorithm in ['CFS', 'MLFQ']
+        self.needs_tick = self.algorithm in ['CFS']
+        self.needs_boost = self.algorithm == 'MLFQ'
         
         # Initialize event queue
         self._initialize_events()
@@ -73,7 +80,7 @@ class Simulator:
                           (self.tick_interval, self.counter, "TICK", None))
             self.counter += 1
         
-        if self.algorithm == 'MLFQ':
+        if self.needs_boost:
             heapq.heappush(self.event_queue, 
                           (self.boost_interval, self.counter, "BOOST", None))
             self.counter += 1
@@ -100,14 +107,17 @@ class Simulator:
         
         process.state = State.READY
         
-        if self.use_heap:
-            if self.algorithm == 'CFS':
-                key = (process.vruntime, process.arrival_time, process.pid, process)
-            elif self.algorithm == 'EDF':
-                deadline = process.deadline if hasattr(process, 'deadline') else float('inf')
-                key = (deadline, process.arrival_time, process.pid, process)
+        if self.algorithm == 'CFS':
+            # For CFS, we store (vruntime, pid, process) in heap
+            key = (process.vruntime, process.pid, process)
+            heapq.heappush(self.ready_queues[cpu_id], key)
+        elif self.algorithm == 'EDF':
+            # For EDF, we store (deadline, pid, process) in heap
+            deadline = getattr(process, 'deadline', float('inf'))
+            key = (deadline, process.pid, process)
             heapq.heappush(self.ready_queues[cpu_id], key)
         else:
+            # For other algorithms, just append to list
             self.ready_queues[cpu_id].append(process)
     
     def select_process(self, cpu_id: int) -> Optional[Process]:
@@ -117,7 +127,7 @@ class Simulator:
             return None
         
         if self.use_heap:
-            _, _, _, process = heapq.heappop(queue)
+            _, _, process = heapq.heappop(queue)
             return process
         
         # Different selection strategies for different algorithms
@@ -133,8 +143,13 @@ class Simulator:
             idx = min(range(len(queue)), key=lambda i: (queue[i].current_priority, queue[i].arrival_time))
             return queue.pop(idx)
         elif self.algorithm == 'MLFQ':
-            idx = min(range(len(queue)), key=lambda i: (queue[i].level, queue[i].arrival_time))
-            return queue.pop(idx)
+            # Find process with highest priority (lowest level)
+            min_level = min(p.level for p in queue)
+            # Among processes with min_level, pick the one that arrived first
+            candidates = [p for p in queue if p.level == min_level]
+            process = min(candidates, key=lambda p: p.arrival_time)
+            queue.remove(process)
+            return process
         
         return queue.pop(0)
     
@@ -153,18 +168,36 @@ class Simulator:
             cur_deadline = getattr(current_process, 'deadline', float('inf'))
             return new_deadline < cur_deadline
         elif self.algorithm == "CFS":
-            return new_process.vruntime < current_process.vruntime
+            # CFS doesn't preempt on arrival, only on tick events
+            return False
         elif self.algorithm == "MLFQ":
             return new_process.level < current_process.level
         
         return False
     
+    def calculate_cfs_time_slice(self, process: Process, num_ready: int) -> int:
+        """Calculate time slice for CFS based on weight and number of ready processes."""
+        if num_ready == 0:
+            return self.quantum
+        
+        # CFS formula: time_slice = (weight / total_weight) * latency_target
+        # Simplified version for our simulator
+        total_weight = sum(p.weight for p in self.processes.values() if p.state != State.TERMINATED)
+        if total_weight == 0:
+            return self.quantum
+        
+        time_slice = max(self.min_granularity, 
+                        int((process.weight / total_weight) * self.latency_target))
+        return min(time_slice, process.remaining_cpu)
+    
     def dispatch(self, process: Process, cpu_id: int):
         """Dispatch a process to run on a CPU."""
         # Handle context switch overhead
-        if self.context_switch > 0:
-            self.clock += self.context_switch
+        if self.context_switch_cost > 0:
+            self.clock += self.context_switch_cost
             self.context_switches += 1
+            # Update idle time for context switch duration
+            self._update_idle_time(cpu_id, self.context_switch_cost)
         
         # Update CPU state
         self.current_processes[cpu_id] = process
@@ -180,19 +213,30 @@ class Simulator:
         # Calculate run time based on algorithm
         run_time = process.remaining_cpu
         
-        if self.algorithm in ["RR", "CFS"]:
+        if self.algorithm == "RR":
             run_time = min(run_time, self.quantum)
-        elif self.algorithm == "MLFQ":
-            quantum = self.quanta[process.level]
-            if quantum > 0:
-                run_time = min(run_time, quantum)
-        
-        # Schedule events
-        if run_time < process.remaining_cpu:
             # Schedule preemption
             heapq.heappush(self.event_queue, 
                           (self.clock + run_time, self.counter, "PREEMPT", process))
             self.counter += 1
+        
+        elif self.algorithm == "CFS":
+            num_ready = len([p for q in self.ready_queues for p in q])
+            run_time = self.calculate_cfs_time_slice(process, num_ready)
+            # Schedule preemption for CFS
+            heapq.heappush(self.event_queue, 
+                          (self.clock + run_time, self.counter, "PREEMPT", process))
+            self.counter += 1
+        
+        elif self.algorithm == "MLFQ":
+            quantum = self.quanta[process.level]
+            if quantum > 0:
+                run_time = min(run_time, quantum)
+                # Schedule preemption
+                heapq.heappush(self.event_queue, 
+                              (self.clock + run_time, self.counter, "PREEMPT", process))
+                self.counter += 1
+            # If quantum is 0 (lowest level), run to completion
         
         # Always schedule completion event
         heapq.heappush(self.event_queue, 
@@ -212,9 +256,11 @@ class Simulator:
         # Update process state
         process.state = State.READY
         
-        # MLFQ: demote process
+        # MLFQ: demote process if it used its full quantum
         if self.algorithm == "MLFQ":
-            process.level = min(process.level + 1, self.num_levels - 1)
+            quantum = self.quanta[process.level]
+            if quantum > 0 and (self.clock - self.current_start[cpu_id]) >= quantum:
+                process.level = min(process.level + 1, self.num_levels - 1)
         
         # Return to ready queue
         self.add_to_ready(process, cpu_id)
@@ -222,11 +268,6 @@ class Simulator:
         # Clear CPU assignment
         del self.cpu_assignments[process]
         self.current_processes[cpu_id] = None
-        
-        # Context switch overhead
-        if self.context_switch > 0:
-            self.clock += self.context_switch
-            self.context_switches += 1
     
     def try_dispatch(self):
         """Attempt to dispatch processes to idle CPUs."""
@@ -242,9 +283,9 @@ class Simulator:
         cpu_id = self.get_least_loaded_cpu()
         self.add_to_ready(process, cpu_id)
         
-        # Check for preemption
+        # Check for preemption (except for CFS which preempts on tick)
         current = self.current_processes[cpu_id]
-        if current and self.should_preempt(process, current, cpu_id):
+        if current and self.should_preempt(process, current, cpu_id) and self.algorithm != "CFS":
             self.preempt(current)
         
         self.try_dispatch()
@@ -278,7 +319,15 @@ class Simulator:
     
     def handle_io_complete(self, process: Process):
         """Handle IO completion event."""
-        self.complete_process(process)
+        process.state = State.READY
+        cpu_id = self.get_least_loaded_cpu()
+        self.add_to_ready(process, cpu_id)
+        
+        # Check for preemption
+        current = self.current_processes[cpu_id]
+        if current and self.should_preempt(process, current, cpu_id):
+            self.preempt(current)
+        
         self.try_dispatch()
     
     def complete_process(self, process: Process):
@@ -299,13 +348,18 @@ class Simulator:
         """Handle priority aging event."""
         for cpu_queue in self.ready_queues:
             if self.use_heap:
-                for _, _, _, process in cpu_queue:
+                for _, _, process in cpu_queue:
                     if process.current_priority > 1:
                         process.current_priority -= 1
             else:
                 for process in cpu_queue:
                     if process.current_priority > 1:
                         process.current_priority -= 1
+        
+        # Also age currently running processes
+        for process in self.cpu_assignments.keys():
+            if process.current_priority > 1:
+                process.current_priority -= 1
         
         # Reschedule next aging event
         if len(self.completed) < len(self.processes):
@@ -314,7 +368,7 @@ class Simulator:
             self.counter += 1
     
     def handle_tick(self):
-        """Handle tick event for CFS and MLFQ."""
+        """Handle tick event for CFS."""
         if self.algorithm == 'CFS':
             for cpu_id in range(self.num_cpus):
                 current = self.current_processes[cpu_id]
@@ -323,6 +377,7 @@ class Simulator:
                     min_vruntime = self.ready_queues[cpu_id][0][0]
                     if min_vruntime < current.vruntime:
                         self.preempt(current)
+                        self.try_dispatch()
         
         # Reschedule next tick
         if len(self.completed) < len(self.processes):
@@ -333,12 +388,18 @@ class Simulator:
     def handle_boost(self):
         """Handle MLFQ priority boost event."""
         for cpu_id in range(self.num_cpus):
-            for i, item in enumerate(self.ready_queues[cpu_id]):
-                if self.use_heap:
-                    _, _, _, process = item
-                else:
+            # Boost processes in ready queue
+            for item in self.ready_queues[cpu_id]:
+                if isinstance(item, tuple):  # Heap item
+                    _, _, process = item
+                else:  # Regular list item
                     process = item
                 process.level = 0  # Boost to highest priority
+            
+            # Boost currently running process
+            current = self.current_processes[cpu_id]
+            if current:
+                current.level = 0
         
         # Reschedule next boost
         if len(self.completed) < len(self.processes):
@@ -349,9 +410,22 @@ class Simulator:
     def run(self) -> Tuple[List[Process], int, List[Tuple]]:
         """Run the simulation."""
         last_clock = 0
+        max_iterations = 100000  # Safety limit to prevent infinite loops
+        iteration = 0
         
         while self.event_queue and len(self.completed) < len(self.processes):
+            iteration += 1
+            if iteration > max_iterations:
+                print(f"Warning: Exceeded maximum iterations ({max_iterations})")
+                print(f"Completed: {len(self.completed)}/{len(self.processes)}")
+                print(f"Event queue size: {len(self.event_queue)}")
+                break
+            
             time, _, event_type, data = heapq.heappop(self.event_queue)
+            
+            # Skip events that are in the past (should not happen)
+            if time < self.clock:
+                continue
             
             # Update idle time for all CPUs
             elapsed = time - last_clock
@@ -365,6 +439,7 @@ class Simulator:
                 if current:
                     current.remaining_cpu -= elapsed
                     if self.algorithm == 'CFS':
+                        # Update vruntime based on weight
                         current.vruntime += elapsed * 1024 / current.weight
             
             self.clock = time
@@ -379,6 +454,7 @@ class Simulator:
                 self.handle_io_complete(data)
             elif event_type == "PREEMPT":
                 self.preempt(data)
+                self.try_dispatch()
             elif event_type == "AGING":
                 self.handle_aging()
             elif event_type == "TICK":
@@ -396,5 +472,8 @@ class Simulator:
         # Add simulation statistics to results
         total_idle = sum(self.idle_time)
         total_busy = (self.clock * self.num_cpus) - total_idle
+        
+        print(f"Simulation completed in {iteration} iterations")
+        print(f"Total time: {self.clock}, Context switches: {self.context_switches}")
         
         return self.completed, self.clock, self.gantt
